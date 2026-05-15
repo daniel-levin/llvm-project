@@ -955,4 +955,126 @@ TEST(ToolChainTest, NestedConfigFile) {
   }
 }
 
+/// On Illumos systems, the gcc installation still has the older Solaris triple.
+TEST(ToolChainTest, VFSIlllumosMultiGCCInstallation) {
+  DiagnosticOptions DiagOpts;
+
+  IntrusiveRefCntPtr<DiagnosticIDs> DiagID = DiagnosticIDs::create();
+  struct TestDiagnosticConsumer : public DiagnosticConsumer {};
+  auto InMemoryFileSystem =
+      llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+
+  const char *EmptyFiles[] = {
+      "/usr/gcc/7/lib/gcc/x86_64-pc-solaris2.11/7.5.0/32/crtbegin.o",
+      "/usr/gcc/7/lib/gcc/x86_64-pc-solaris2.11/7.5.0/crtbegin.o",
+      "/usr/gcc/11/lib/gcc/x86_64-pc-solaris2.11/11.4.0/32/crtbegin.o",
+      "/usr/gcc/11/lib/gcc/x86_64-pc-solaris2.11/11.4.0/crtbegin.o",
+      "/usr/gcc/4.7/lib/gcc/i386-pc-solaris2.11/4.7.3/amd64/crtbegin.o",
+      "/usr/gcc/4.7/lib/gcc/i386-pc-solaris2.11/4.7.3/crtbegin.o",
+  };
+
+  for (const char *Path : EmptyFiles)
+    InMemoryFileSystem->addFile(Path, 0,
+                                llvm::MemoryBuffer::getMemBuffer("\n"));
+
+  {
+    DiagnosticsEngine Diags(DiagID, DiagOpts, new TestDiagnosticConsumer);
+    Driver TheDriver("/bin/clang", "x86_64-pc-illumos", Diags,
+                     "clang LLVM compiler", InMemoryFileSystem);
+    std::unique_ptr<Compilation> C(TheDriver.BuildCompilation({"-v"}));
+    ASSERT_TRUE(C);
+    std::string S;
+    {
+      llvm::raw_string_ostream OS(S);
+      C->getDefaultToolChain().printVerboseInfo(OS);
+    }
+
+    if (is_style_windows(llvm::sys::path::Style::native))
+      llvm::replace(S, '\\', '/');
+
+    EXPECT_EQ("Found candidate GCC installation: "
+              "/usr/gcc/11/lib/gcc/x86_64-pc-solaris2.11/11.4.0\n"
+              "Selected GCC installation: "
+              "/usr/gcc/11/lib/gcc/x86_64-pc-solaris2.11/11.4.0\n"
+              "Candidate multilib: .;@m64\n"
+              "Candidate multilib: 32;@m32\n"
+              "Selected multilib: .;@m64\n",
+              S);
+  }
+}
+
+/// Most Illumos distributions keep their GCC installations in the same place as
+/// Solaris. Notably, OmniOS and Helios do not.
+TEST(ToolChainTest, VFSIlllumosMultiGCCInstallationModern) {
+  DiagnosticOptions DiagOpts;
+
+  IntrusiveRefCntPtr<DiagnosticIDs> DiagID = DiagnosticIDs::create();
+  struct TestDiagnosticConsumer : public DiagnosticConsumer {};
+  auto InMemoryFileSystem =
+      llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+
+  const char *EmptyFiles[] = {
+      "/opt/gcc-7/lib/gcc/x86_64-pc-solaris2.11/7.5.0/32/crtbegin.o",
+      "/opt/gcc-7/lib/gcc/x86_64-pc-solaris2.11/7.5.0/crtbegin.o",
+      "/opt/gcc-11/lib/gcc/x86_64-pc-solaris2.11/11.4.0/32/crtbegin.o",
+      "/opt/gcc-11/lib/gcc/x86_64-pc-solaris2.11/11.4.0/crtbegin.o",
+      "/opt-gcc-4/lib/gcc/i386-pc-solaris2.11/4.7.3/amd64/crtbegin.o",
+      "/opt/gcc-4/lib/gcc/i386-pc-solaris2.11/4.7.3/crtbegin.o",
+  };
+
+  for (const char *Path : EmptyFiles)
+    InMemoryFileSystem->addFile(Path, 0,
+                                llvm::MemoryBuffer::getMemBuffer("\n"));
+
+  {
+    DiagnosticsEngine Diags(DiagID, DiagOpts, new TestDiagnosticConsumer);
+    Driver TheDriver("/bin/clang", "x86_64-pc-illumos", Diags,
+                     "clang LLVM compiler", InMemoryFileSystem);
+    std::unique_ptr<Compilation> C(TheDriver.BuildCompilation({"-v"}));
+    ASSERT_TRUE(C);
+    std::string S;
+    {
+      llvm::raw_string_ostream OS(S);
+      C->getDefaultToolChain().printVerboseInfo(OS);
+    }
+
+    if (is_style_windows(llvm::sys::path::Style::native))
+      llvm::replace(S, '\\', '/');
+
+    EXPECT_EQ("Found candidate GCC installation: "
+              "/opt/gcc-11/lib/gcc/x86_64-pc-solaris2.11/11.4.0\n"
+              "Selected GCC installation: "
+              "/opt/gcc-11/lib/gcc/x86_64-pc-solaris2.11/11.4.0\n"
+              "Candidate multilib: .;@m64\n"
+              "Candidate multilib: 32;@m32\n"
+              "Selected multilib: .;@m64\n",
+              S);
+  }
+
+  {
+    DiagnosticsEngine Diags(DiagID, DiagOpts, new TestDiagnosticConsumer);
+    Driver TheDriver("/bin/clang", "i386-pc-illumos", Diags,
+                     "clang LLVM compiler", InMemoryFileSystem);
+    std::unique_ptr<Compilation> C(TheDriver.BuildCompilation({"-v"}));
+    ASSERT_TRUE(C);
+    std::string S;
+    {
+      llvm::raw_string_ostream OS(S);
+      C->getDefaultToolChain().printVerboseInfo(OS);
+    }
+
+    if (is_style_windows(llvm::sys::path::Style::native))
+      llvm::replace(S, '\\', '/');
+
+    EXPECT_EQ("Found candidate GCC installation: "
+              "/opt/gcc-11/lib/gcc/x86_64-pc-solaris2.11/11.4.0\n"
+              "Selected GCC installation: "
+              "/opt/gcc-11/lib/gcc/x86_64-pc-solaris2.11/11.4.0\n"
+              "Candidate multilib: .;@m32\n"
+              "Candidate multilib: 32;@m32\n"
+              "Selected multilib: 32;@m32\n",
+              S);
+  }
+}
+
 } // end anonymous namespace.

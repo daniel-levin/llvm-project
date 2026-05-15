@@ -27,58 +27,18 @@ using namespace clang::driver::toolchains;
 using namespace clang;
 using namespace llvm::opt;
 
-bool isLinkerGnuLd(const ToolChain &TC, const ArgList &Args) {
-  // Only used if targetting Solaris.
-  const Arg *A = Args.getLastArg(options::OPT_fuse_ld_EQ);
-  StringRef UseLinker = A ? A->getValue() : TC.getDriver().getPreferredLinker();
-  return UseLinker == "bfd" || UseLinker == "gld";
-}
-
-static bool getPIE(const ArgList &Args, const ToolChain &TC) {
-  if (Args.hasArg(options::OPT_shared) || Args.hasArg(options::OPT_static) ||
-      Args.hasArg(options::OPT_r))
-    return false;
-
-  return Args.hasFlag(options::OPT_pie, options::OPT_no_pie,
-                      TC.isPIEDefault(Args));
-}
-
-// FIXME: Need to handle PreferredLinker here?
-std::string illumos::Linker::getLinkerPath(const ArgList &Args) const {
-  const ToolChain &ToolChain = getToolChain();
-  if (const Arg *A = Args.getLastArg(options::OPT_fuse_ld_EQ)) {
-    StringRef UseLinker = A->getValue();
-    if (!UseLinker.empty()) {
-      if (llvm::sys::path::is_absolute(UseLinker) &&
-          llvm::sys::fs::can_execute(UseLinker))
-        return std::string(UseLinker);
-
-      // Accept 'bfd' and 'gld' as aliases for the GNU linker.
-      if (UseLinker == "bfd" || UseLinker == "gld")
-        // FIXME: Could also use /usr/bin/gld here.
-        return "/usr/gnu/bin/ld";
-
-      // Accept 'ld' as alias for the default linker
-      if (UseLinker != "ld")
-        ToolChain.getDriver().Diag(diag::err_drv_invalid_linker_name)
-            << A->getAsString(Args);
-    }
-  }
-
-  // getDefaultLinker() always returns an absolute path.
-  return ToolChain.getDefaultLinker();
-}
-
 void illumos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                                    const InputInfo &Output,
                                    const InputInfoList &Inputs,
                                    const ArgList &Args,
                                    const char *LinkingOutput) const {
   const auto &ToolChain = static_cast<const Illumos &>(getToolChain());
+  const LinkBlueprints &LB = ToolChain.LinkBlueprints;
+
   const Driver &D = ToolChain.getDriver();
   const llvm::Triple::ArchType Arch = ToolChain.getArch();
-  const bool IsPIE = getPIE(Args, ToolChain);
-  const bool LinkerIsGnuLd = isLinkerGnuLd(ToolChain, Args);
+  const bool IsPIE = LB.GeneratePIE;
+  const bool LinkerIsGnuLd = !LB.UsingSystemLinker;
   ArgStringList CmdArgs;
 
   // Demangle C++ names in errors.  GNU ld already defaults to --demangle.
@@ -264,69 +224,69 @@ void illumos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   ToolChain.addProfileRTLibs(Args, CmdArgs);
 
-  const char *Exec = Args.MakeArgString(getLinkerPath(Args));
+  const char *Exec = Args.MakeArgString("");
   C.addCommand(std::make_unique<Command>(JA, *this, ResponseFileSupport::None(),
                                          Exec, CmdArgs, Inputs, Output));
 }
 
-static StringRef getSolarisLibSuffix(const llvm::Triple &Triple) {
-  switch (Triple.getArch()) {
-  case llvm::Triple::x86:
-  case llvm::Triple::sparc:
-  default:
-    break;
-  case llvm::Triple::x86_64:
-    return "/amd64";
-  case llvm::Triple::sparcv9:
-    return "/sparcv9";
-  }
-  return "";
-}
-
-/// Solaris - Solaris tool chain which can call as(1) and ld(1) directly.
-
 Illumos::Illumos(const Driver &D, const llvm::Triple &Triple,
                  const ArgList &Args)
-    : Generic_ELF(D, Triple, Args) {
+    : Generic_ELF(D, Triple, Args), LinkBlueprints() {
 
   GCCInstallation.init(Triple, Args);
 
-  StringRef LibSuffix = getSolarisLibSuffix(Triple);
-  path_list &Paths = getFilePaths();
-  if (GCCInstallation.isValid()) {
-    // On Solaris gcc uses both an architecture-specific path with triple in it
-    // as well as a more generic lib path (+arch suffix).
-    addPathIfExists(D,
-                    GCCInstallation.getInstallPath() +
-                        GCCInstallation.getMultilib().gccSuffix(),
-                    Paths);
-    addPathIfExists(D, GCCInstallation.getParentLibPath() + LibSuffix, Paths);
+  LinkBlueprints.GeneratePIE =
+      Args.hasFlag(options::OPT_pie, options::OPT_no_pie, false);
+
+  if (const Arg *A = Args.getLastArg(options::OPT_fuse_ld_EQ)) {
+    StringRef UseLinker = A->getValue();
+    if (!UseLinker.empty()) {
+      Args.ClaimAllArgs(options::OPT_fuse_ld_EQ);
+      LinkBlueprints.LinkerPath = UseLinker;
+    }
   }
+}
 
-  // If we are currently running Clang inside of the requested system root,
-  // add its parent library path to those searched.
-  if (StringRef(D.Dir).starts_with(D.SysRoot))
-    addPathIfExists(D, D.Dir + "/../lib", Paths);
-
-  addPathIfExists(D, D.SysRoot + "/usr/lib" + LibSuffix, Paths);
+bool Illumos::mustElideDynamicList() const {
+  return LinkBlueprints.UsingSystemLinker;
 }
 
 SanitizerMask Illumos::getSupportedSanitizers() const {
+  /// TODO: ensure sanitizers work on Illumos
   return ToolChain::getSupportedSanitizers();
 }
 
-const char *Illumos::getDefaultLinker() const {
-  // FIXME: Only handle Solaris ld and GNU ld here.
-  return llvm::StringSwitch<const char *>(getDriver().getPreferredLinker())
-      .Cases({"bfd", "gld"}, "/usr/gnu/bin/ld")
-      .Default("/usr/bin/ld");
+void Illumos::addAsNeededOption(llvm::opt::ArgStringList &CmdArgs,
+                                bool as_needed) const {
+  if (LinkBlueprints.UsingSystemLinker) {
+    CmdArgs.push_back("-z");
+    CmdArgs.push_back(as_needed ? "ignore" : "record");
+  } else {
+    CmdArgs.push_back(as_needed ? "--as-needed" : "--no-as-needed");
+  }
 }
 
-Tool *Illumos::buildAssembler() const {
-  return new tools::illumos::Assembler(*this);
-}
+void Illumos::addLibStdCxxIncludePaths(
+    const llvm::opt::ArgList &DriverArgs,
+    llvm::opt::ArgStringList &CC1Args) const {
+  // We need a detected GCC installation on Solaris (similar to Linux)
+  // to provide libstdc++'s headers.
+  if (!GCCInstallation.isValid())
+    return;
 
-Tool *Illumos::buildLinker() const { return new tools::illumos::Linker(*this); }
+  // By default, look for the C++ headers in an include directory adjacent to
+  // the lib directory of the GCC installation.
+  // On Solaris this usually looks like /usr/gcc/X.Y/include/c++/X.Y.Z
+  StringRef LibDir = GCCInstallation.getParentLibPath();
+  StringRef TripleStr = GCCInstallation.getTriple().str();
+  const Multilib &Multilib = GCCInstallation.getMultilib();
+  const GCCVersion &Version = GCCInstallation.getVersion();
+
+  // The primary search for libstdc++ supports multiarch variants.
+  addLibStdCXXIncludePaths(LibDir.str() + "/../include/c++/" + Version.Text,
+                           TripleStr, Multilib.includeSuffix(), DriverArgs,
+                           CC1Args);
+}
 
 void Illumos::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
                                         ArgStringList &CC1Args) const {
@@ -372,42 +332,4 @@ void Illumos::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   }
 
   addExternCSystemInclude(DriverArgs, CC1Args, D.SysRoot + "/usr/include");
-}
-
-void Illumos::addLibStdCxxIncludePaths(
-    const llvm::opt::ArgList &DriverArgs,
-    llvm::opt::ArgStringList &CC1Args) const {
-  // We need a detected GCC installation on Solaris (similar to Linux)
-  // to provide libstdc++'s headers.
-  if (!GCCInstallation.isValid())
-    return;
-
-  // By default, look for the C++ headers in an include directory adjacent to
-  // the lib directory of the GCC installation.
-  // On Solaris this usually looks like /usr/gcc/X.Y/include/c++/X.Y.Z
-  StringRef LibDir = GCCInstallation.getParentLibPath();
-  StringRef TripleStr = GCCInstallation.getTriple().str();
-  const Multilib &Multilib = GCCInstallation.getMultilib();
-  const GCCVersion &Version = GCCInstallation.getVersion();
-
-  // The primary search for libstdc++ supports multiarch variants.
-  addLibStdCXXIncludePaths(LibDir.str() + "/../include/c++/" + Version.Text,
-                           TripleStr, Multilib.includeSuffix(), DriverArgs,
-                           CC1Args);
-}
-
-void Illumos::addAsNeededOption(llvm::opt::ArgStringList &CmdArgs,
-                                bool as_needed) const {
-  CmdArgs.push_back("-z");
-  CmdArgs.push_back(as_needed ? "ignore" : "record");
-  /* TODO: GNU linker
-} else {
-  CmdArgs.push_back(as_needed ? "--as-needed" : "--no-as-needed");
-}
-*/
-}
-
-bool Illumos::mustElideDynamicList() const {
-  // TODO: GNU linker
-  return true;
 }

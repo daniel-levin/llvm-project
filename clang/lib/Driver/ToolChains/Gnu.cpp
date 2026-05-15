@@ -1823,7 +1823,7 @@ static bool findBiarchMultilibs(const Driver &D,
   // crtbegin.o without the subdirectory.
 
   StringRef Suff64 = "/64";
-  // Solaris and Illumos use platform-specific suffixes instead of /64.
+  // Solaris/Illumos use platform-specific suffixes instead of /64.
   if (TargetTriple.isOSSolaris() || TargetTriple.isOSIllumos()) {
     switch (TargetTriple.getArch()) {
     case llvm::Triple::x86:
@@ -2255,8 +2255,8 @@ void Generic_GCC::GCCInstallationDetector::AddDefaultGCCPrefixes(
     return;
   }
 
-  if (TargetTriple.isOSSolaris() || TargetTriple.isOSIllumos()) {
-    // Solaris/Illumos is a special case.
+  if (TargetTriple.isOSSolaris()) {
+    // Solaris is a special case.
     // The GCC installation is under
     //   /usr/gcc/<major>.<minor>/lib/gcc/<triple>/<major>.<minor>.<patch>/
     // so we need to find those /usr/gcc/*/lib/gcc libdirs and go with
@@ -2287,6 +2287,18 @@ void Generic_GCC::GCCInstallationDetector::AddDefaultGCCPrefixes(
     std::sort(SolarisPrefixes.rbegin(), SolarisPrefixes.rend());
     for (auto p : SolarisPrefixes)
       Prefixes.emplace_back(p.second);
+    return;
+  }
+
+  if (TargetTriple.isOSIllumos()) {
+    // Start several major versions in the future for safety.
+    for (int version = 23; version >= 7; version--) {
+      auto V = std::to_string(version);
+      // Most distributions use the Solaris-like /usr/gcc/<major> install
+      // but some, such as OmniOS and Helios, use /opt/gcc-<major>
+      Prefixes.push_back("/opt/gcc-" + V);
+      Prefixes.push_back("/usr/gcc/" + V);
+    }
     return;
   }
 
@@ -2496,6 +2508,27 @@ void Generic_GCC::GCCInstallationDetector::AddDefaultGCCPrefixes(
                            end(SolarisSparcV9Triples));
       BiarchTripleAliases.append(begin(SolarisSparcV8Triples),
                                  end(SolarisSparcV8Triples));
+      break;
+    default:
+      break;
+    }
+    return;
+  }
+
+  if (TargetTriple.isOSIllumos()) {
+    // Important note: despite being on Illumos, we search for the GCC
+    // installation still bearing the various "Solaris" names.
+    static const char *const SolarisLibDirs[] = {"/lib"};
+    static const char *const SolarisX86_64Triples[] = {"x86_64-pc-solaris2.11"};
+    LibDirs.append(begin(SolarisLibDirs), end(SolarisLibDirs));
+    BiarchLibDirs.append(begin(SolarisLibDirs), end(SolarisLibDirs));
+    switch (TargetTriple.getArch()) {
+    case llvm::Triple::x86:
+    case llvm::Triple::x86_64:
+      BiarchTripleAliases.append(begin(SolarisX86_64Triples),
+                                 end(SolarisX86_64Triples));
+      TripleAliases.append(begin(SolarisX86_64Triples),
+                           end(SolarisX86_64Triples));
       break;
     default:
       break;
