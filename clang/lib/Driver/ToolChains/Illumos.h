@@ -45,19 +45,21 @@ public:
                     const char *LinkingOutput) const override;
 };
 
-/// Holds enough data to drive either the system linker
-/// or any GNU ld-compatible linker. We separate parsing our
+/// Holds enough data to drive the linker compatibly with either the
+/// system linker or any GNU ld-compatible linker. We separate parsing our
 /// own arguments from generating the actual command to the linker.
-struct LinkBlueprints {
+struct LLVM_LIBRARY_VISIBILITY LinkBlueprints {
   bool UsingSystemLinker;
   std::string LinkerPath;
   bool GeneratePIE;
+  bool ExportDynamic;
 
 public:
   LinkBlueprints() {
     UsingSystemLinker = true;
     LinkerPath = "/usr/bin/ld";
     GeneratePIE = false;
+    ExportDynamic = false;
   }
 };
 
@@ -91,7 +93,6 @@ namespace toolchains {
 /// We confine Illumos-specific driver functionality here, so that it does
 /// not externalize its needs onto the rest of the driver.
 class LLVM_LIBRARY_VISIBILITY Illumos : public Generic_ELF {
-  friend class tools::illumos::Linker;
   tools::illumos::LinkBlueprints LinkBlueprints;
 
 public:
@@ -122,6 +123,10 @@ public:
   /// existing at specific paths. In this case, we take a dependency on the
   /// system linker, whose command line interface is different from all others.
   const char *getDefaultLinker() const override { return "/usr/bin/ld"; }
+
+  const tools::illumos::LinkBlueprints &getLinkBlueprints() const {
+    return LinkBlueprints;
+  }
 
 protected:
   Tool *buildAssembler() const override {

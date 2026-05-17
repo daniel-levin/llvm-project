@@ -33,31 +33,61 @@ void illumos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                                    const ArgList &Args,
                                    const char *LinkingOutput) const {
   const auto &ToolChain = static_cast<const Illumos &>(getToolChain());
-  const LinkBlueprints &LB = ToolChain.LinkBlueprints;
-
+  const LinkBlueprints &LB = ToolChain.getLinkBlueprints();
   const Driver &D = ToolChain.getDriver();
   const llvm::Triple::ArchType Arch = ToolChain.getArch();
-  const bool IsPIE = LB.GeneratePIE;
+
   const bool LinkerIsGnuLd = !LB.UsingSystemLinker;
+
   ArgStringList CmdArgs;
 
-  // Demangle C++ names in errors.  GNU ld already defaults to --demangle.
-  if (!LinkerIsGnuLd)
+  assert((Output.isFilename() || Output.isNothing()) && "Invalid output.");
+  if (Output.isFilename()) {
+    CmdArgs.push_back("-o");
+    CmdArgs.push_back(Output.getFilename());
+  }
+
+  if (LB.UsingSystemLinker) {
     CmdArgs.push_back("-C");
+  } else {
+    switch (Arch) {
+    case llvm::Triple::x86:
+      CmdArgs.push_back("-m");
+      CmdArgs.push_back("elf_i386_sol2");
+      break;
+    case llvm::Triple::x86_64:
+      CmdArgs.push_back("-m");
+      CmdArgs.push_back("elf_x86_64_sol2");
+      break;
+    default:
+      break;
+    }
+
+    CmdArgs.push_back("--eh-frame-hdr");
+  }
+
+  if (LB.ExportDynamic) {
+    if (LB.UsingSystemLinker) {
+      // The system linker has no flag for this.
+      // Leaving this empty branch here for clarity.
+    } else {
+      CmdArgs.push_back("--export-dynamic");
+    }
+  }
+
+  if (LB.GeneratePIE) {
+    if (LB.UsingSystemLinker) {
+      CmdArgs.push_back("-z");
+      CmdArgs.push_back("type=pie");
+    } else {
+      CmdArgs.push_back("-pie");
+    }
+  }
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_shared,
                    options::OPT_r)) {
     CmdArgs.push_back("-e");
     CmdArgs.push_back("_start");
-  }
-
-  if (IsPIE) {
-    if (LinkerIsGnuLd) {
-      CmdArgs.push_back("-pie");
-    } else {
-      CmdArgs.push_back("-z");
-      CmdArgs.push_back("type=pie");
-    }
   }
 
   if (Args.hasArg(options::OPT_static)) {
@@ -71,44 +101,6 @@ void illumos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     // anything for pthreads. Claim argument to avoid warning.
     Args.ClaimAllArgs(options::OPT_pthread);
     Args.ClaimAllArgs(options::OPT_pthreads);
-  }
-
-  if (LinkerIsGnuLd) {
-    // Set the correct linker emulation for 32- and 64-bit Solaris.
-    switch (Arch) {
-    case llvm::Triple::x86:
-      CmdArgs.push_back("-m");
-      CmdArgs.push_back("elf_i386_sol2");
-      break;
-    case llvm::Triple::x86_64:
-      CmdArgs.push_back("-m");
-      CmdArgs.push_back("elf_x86_64_sol2");
-      break;
-    case llvm::Triple::sparc:
-      CmdArgs.push_back("-m");
-      CmdArgs.push_back("elf32_sparc_sol2");
-      break;
-    case llvm::Triple::sparcv9:
-      CmdArgs.push_back("-m");
-      CmdArgs.push_back("elf64_sparc_sol2");
-      break;
-    default:
-      break;
-    }
-
-    if (Args.hasArg(options::OPT_rdynamic))
-      CmdArgs.push_back("-export-dynamic");
-
-    CmdArgs.push_back("--eh-frame-hdr");
-  } else {
-    // -rdynamic is a no-op with Solaris ld.  Claim argument to avoid warning.
-    Args.ClaimAllArgs(options::OPT_rdynamic);
-  }
-
-  assert((Output.isFilename() || Output.isNothing()) && "Invalid output.");
-  if (Output.isFilename()) {
-    CmdArgs.push_back("-o");
-    CmdArgs.push_back(Output.getFilename());
   }
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
@@ -140,7 +132,7 @@ void illumos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(values_xpg)));
 
     const char *crtbegin = nullptr;
-    if (Args.hasArg(options::OPT_shared) || IsPIE)
+    if (Args.hasArg(options::OPT_shared) || LB.GeneratePIE)
       crtbegin = "crtbeginS.o";
     else
       crtbegin = "crtbegin.o";
@@ -214,7 +206,7 @@ void illumos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
                    options::OPT_r)) {
     const char *crtend = nullptr;
-    if (Args.hasArg(options::OPT_shared) || IsPIE)
+    if (Args.hasArg(options::OPT_shared) || LB.GeneratePIE)
       crtend = "crtendS.o";
     else
       crtend = "crtend.o";
@@ -224,7 +216,7 @@ void illumos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   ToolChain.addProfileRTLibs(Args, CmdArgs);
 
-  const char *Exec = Args.MakeArgString("");
+  const char *Exec = Args.MakeArgString(LB.LinkerPath);
   C.addCommand(std::make_unique<Command>(JA, *this, ResponseFileSupport::None(),
                                          Exec, CmdArgs, Inputs, Output));
 }
@@ -237,6 +229,11 @@ Illumos::Illumos(const Driver &D, const llvm::Triple &Triple,
 
   LinkBlueprints.GeneratePIE =
       Args.hasFlag(options::OPT_pie, options::OPT_no_pie, false);
+
+  if (Args.hasArg(options::OPT_rdynamic)) {
+    LinkBlueprints.ExportDynamic = true;
+    Args.ClaimAllArgs(options::OPT_rdynamic);
+  }
 
   if (const Arg *A = Args.getLastArg(options::OPT_fuse_ld_EQ)) {
     StringRef UseLinker = A->getValue();
@@ -269,20 +266,15 @@ void Illumos::addAsNeededOption(llvm::opt::ArgStringList &CmdArgs,
 void Illumos::addLibStdCxxIncludePaths(
     const llvm::opt::ArgList &DriverArgs,
     llvm::opt::ArgStringList &CC1Args) const {
-  // We need a detected GCC installation on Solaris (similar to Linux)
-  // to provide libstdc++'s headers.
+
   if (!GCCInstallation.isValid())
     return;
 
-  // By default, look for the C++ headers in an include directory adjacent to
-  // the lib directory of the GCC installation.
-  // On Solaris this usually looks like /usr/gcc/X.Y/include/c++/X.Y.Z
   StringRef LibDir = GCCInstallation.getParentLibPath();
   StringRef TripleStr = GCCInstallation.getTriple().str();
   const Multilib &Multilib = GCCInstallation.getMultilib();
   const GCCVersion &Version = GCCInstallation.getVersion();
 
-  // The primary search for libstdc++ supports multiarch variants.
   addLibStdCXXIncludePaths(LibDir.str() + "/../include/c++/" + Version.Text,
                            TripleStr, Multilib.includeSuffix(), DriverArgs,
                            CC1Args);

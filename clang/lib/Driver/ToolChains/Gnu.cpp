@@ -2296,10 +2296,9 @@ void Generic_GCC::GCCInstallationDetector::AddDefaultGCCPrefixes(
       auto V = std::to_string(version);
       // Most distributions use the Solaris-like /usr/gcc/<major> install
       // but some, such as OmniOS and Helios, use /opt/gcc-<major>
-      Prefixes.push_back("/opt/gcc-" + V);
-      Prefixes.push_back("/usr/gcc/" + V);
+      Prefixes.push_back(concat(SysRoot, "/opt/gcc-" + V));
+      Prefixes.push_back(concat(concat(SysRoot, "/usr/gcc/"), V));
     }
-    return;
   }
 
   // For Linux, if --sysroot is not specified, look for RHEL/CentOS devtoolsets
