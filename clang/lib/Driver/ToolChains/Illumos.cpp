@@ -227,6 +227,27 @@ Illumos::Illumos(const Driver &D, const llvm::Triple &Triple,
 
   GCCInstallation.init(Triple, Args);
 
+  if (GCCInstallation.isValid()) {
+    addPathIfExists(D,
+                    concat(GCCInstallation.getInstallPath(),
+                           GCCInstallation.getMultilib().gccSuffix()),
+                    getLibraryPaths());
+  }
+
+  switch (Triple.getArch()) {
+  case llvm::Triple::x86:
+    addPathIfExists(D, concat(concat(D.SysRoot, "/usr"), "/lib"),
+                    getLibraryPaths());
+    break;
+  case llvm::Triple::x86_64:
+    addPathIfExists(D,
+                    concat(concat(concat(D.SysRoot, "/usr"), "/lib"), "/amd64"),
+                    getLibraryPaths());
+    break;
+  default:
+    break;
+  }
+
   LinkBlueprints.GeneratePIE =
       Args.hasFlag(options::OPT_pie, options::OPT_no_pie, false);
 
