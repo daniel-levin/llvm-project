@@ -48,19 +48,43 @@ public:
 /// Holds enough data to drive the linker compatibly with either the
 /// system linker or any GNU ld-compatible linker. We separate parsing our
 /// own arguments from generating the actual command to the linker.
+/// There are illegal combinations of options we _could_ detect and
+/// protect against (such as `-r -shared`) but we don't for two reasons:
+/// 1. The system linker provides particularly good diagnostics.
+/// 2. It's what other ToolChains do.
 struct LLVM_LIBRARY_VISIBILITY LinkBlueprints {
   bool UsingSystemLinker;
   std::string LinkerPath;
-  bool GeneratePIE;
+  bool PIERequested;
   bool ExportDynamic;
+  bool GenerateRelocatableObject;
+  bool DemangleSymbols;
+  bool GenerateShared;
+  bool GenerateStatic;
+  bool LinkLibc;
+  bool LinkStartFiles;
+  bool HaveAnsi;
+  const LangStandard *Std;
 
 public:
   LinkBlueprints() {
     UsingSystemLinker = true;
     LinkerPath = "/usr/bin/ld";
-    GeneratePIE = false;
+    PIERequested = false;
     ExportDynamic = false;
+    GenerateRelocatableObject = false;
+    DemangleSymbols = true;
+    GenerateShared = false;
+    GenerateStatic = false;
+    LinkLibc = true;
+    LinkStartFiles = true;
+    HaveAnsi = false;
+    Std = nullptr;
   }
+
+  bool shouldSetStartSymbol() const { return !GenerateRelocatableObject; }
+
+  bool shouldGeneratePIE() const { return PIERequested || GenerateShared; }
 };
 
 } // end namespace illumos

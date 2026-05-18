@@ -89,6 +89,9 @@ static std::string updateTripleOSVersion(std::string TargetTripleString) {
       }
     }
   }
+#if defined(__illumos__)
+  return "x86_64-pc-illumos";
+#endif
   return TargetTripleString;
 }
 

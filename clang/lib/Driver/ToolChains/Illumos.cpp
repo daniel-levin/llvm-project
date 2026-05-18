@@ -34,22 +34,41 @@ void illumos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                                    const char *LinkingOutput) const {
   const auto &ToolChain = static_cast<const Illumos &>(getToolChain());
   const LinkBlueprints &LB = ToolChain.getLinkBlueprints();
-  const Driver &D = ToolChain.getDriver();
   const llvm::Triple::ArchType Arch = ToolChain.getArch();
-
-  const bool LinkerIsGnuLd = !LB.UsingSystemLinker;
 
   ArgStringList CmdArgs;
 
-  assert((Output.isFilename() || Output.isNothing()) && "Invalid output.");
+  // Some command line arguments are the same on the system linker and GNU
+  // ld-compatible linkers.
   if (Output.isFilename()) {
     CmdArgs.push_back("-o");
     CmdArgs.push_back(Output.getFilename());
   }
 
-  if (LB.UsingSystemLinker) {
+  if (LB.UsingSystemLinker && LB.DemangleSymbols) {
+    // Demangles C++ symbols, on by default in GNU ld compatible linkers.
     CmdArgs.push_back("-C");
-  } else {
+  } else if (!LB.UsingSystemLinker && !LB.DemangleSymbols) {
+    CmdArgs.push_back("--no-demangle");
+  }
+
+  if (LB.shouldSetStartSymbol()) {
+    CmdArgs.push_back("-e");
+    CmdArgs.push_back("_start");
+  }
+
+  if (LB.GenerateRelocatableObject) {
+    CmdArgs.push_back("-r");
+  }
+
+  // The system linker determines which architecture to use based
+  // on the ELF class and machine type of the first relocatable
+  // object passed to it. It has no option for setting the architecture
+  // any other way. By contrast, GNU-ld compatible linkers must be told
+  // which architecture they're creating an artifact for. The so-called
+  // emulation flag is used to determine, amongst other things, the choice
+  // of dynamic linker and final layout.
+  if (!LB.UsingSystemLinker) {
     switch (Arch) {
     case llvm::Triple::x86:
       CmdArgs.push_back("-m");
@@ -75,7 +94,7 @@ void illumos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
-  if (LB.GeneratePIE) {
+  if (LB.shouldGeneratePIE()) {
     if (LB.UsingSystemLinker) {
       CmdArgs.push_back("-z");
       CmdArgs.push_back("type=pie");
@@ -84,137 +103,69 @@ void illumos::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_shared,
-                   options::OPT_r)) {
-    CmdArgs.push_back("-e");
-    CmdArgs.push_back("_start");
+  if (LB.GenerateStatic) {
+    if (LB.UsingSystemLinker) {
+      CmdArgs.push_back("-Bstatic");
+      CmdArgs.push_back("-dn");
+    } else {
+      CmdArgs.push_back("-static");
+    }
   }
 
-  if (Args.hasArg(options::OPT_static)) {
-    CmdArgs.push_back("-Bstatic");
-    CmdArgs.push_back("-dn");
-  } else {
-    if (!Args.hasArg(options::OPT_r) && Args.hasArg(options::OPT_shared))
-      CmdArgs.push_back("-shared");
-
-    // libpthread has been folded into libc since Solaris 10, no need to do
-    // anything for pthreads. Claim argument to avoid warning.
-    Args.ClaimAllArgs(options::OPT_pthread);
-    Args.ClaimAllArgs(options::OPT_pthreads);
-  }
-
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
-                   options::OPT_r)) {
-    if (!Args.hasArg(options::OPT_shared))
+  if (LB.LinkLibc && LB.LinkStartFiles) {
+    if (!LB.GenerateShared) {
       CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crt1.o")));
-
+    }
     CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crti.o")));
 
-    const Arg *Std = Args.getLastArg(options::OPT_std_EQ, options::OPT_ansi);
-    bool HaveAnsi = false;
-    const LangStandard *LangStd = nullptr;
-    if (Std) {
-      HaveAnsi = Std->getOption().matches(options::OPT_ansi);
-      if (!HaveAnsi)
-        LangStd = LangStandard::getLangStandardForName(Std->getValue());
+    if (LB.HaveAnsi || (LB.Std && !LB.Std->isGNUMode())) {
+      CmdArgs.push_back(
+          Args.MakeArgString(ToolChain.GetFilePath("values-Xc.o")));
+    } else {
+      CmdArgs.push_back(
+          Args.MakeArgString(ToolChain.GetFilePath("values-Xa.o")));
     }
 
-    const char *values_X = "values-Xa.o";
-    // Use values-Xc.o for -ansi, -std=c*, -std=iso9899:199409.
-    if (HaveAnsi || (LangStd && !LangStd->isGNUMode()))
-      values_X = "values-Xc.o";
-    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(values_X)));
+    if (LB.Std && LB.Std->getLanguage() == Language::C && !LB.Std->isC99()) {
+      CmdArgs.push_back(
+          Args.MakeArgString(ToolChain.GetFilePath("values-xpg4.o")));
+    } else {
+      CmdArgs.push_back(
+          Args.MakeArgString(ToolChain.GetFilePath("values-xpg6.o")));
+    }
 
-    const char *values_xpg = "values-xpg6.o";
-    // Use values-xpg4.o for -std=c90, -std=gnu90, -std=iso9899:199409.
-    if (LangStd && LangStd->getLanguage() == Language::C && !LangStd->isC99())
-      values_xpg = "values-xpg4.o";
-    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(values_xpg)));
-
-    const char *crtbegin = nullptr;
-    if (Args.hasArg(options::OPT_shared) || LB.GeneratePIE)
-      crtbegin = "crtbeginS.o";
-    else
-      crtbegin = "crtbegin.o";
-    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(crtbegin)));
-    // Add crtfastmath.o if available and fast math is enabled.
-    ToolChain.addFastMathRuntimeIfAvailable(Args, CmdArgs);
+    if (LB.shouldGeneratePIE()) {
+      CmdArgs.push_back(
+          Args.MakeArgString(ToolChain.GetFilePath("crtbeginS.o")));
+    } else {
+      CmdArgs.push_back(
+          Args.MakeArgString(ToolChain.GetFilePath("crtbegin.o")));
+    }
   }
 
   ToolChain.AddFilePathLibArgs(Args, CmdArgs);
-
   Args.addAllArgs(CmdArgs, {options::OPT_L, options::OPT_T_Group});
-
-  bool NeedsSanitizerDeps = addSanitizerRuntimes(ToolChain, Args, CmdArgs);
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
 
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
-                   options::OPT_r)) {
-    // Use the static OpenMP runtime with -static-openmp
-    bool StaticOpenMP = Args.hasArg(options::OPT_static_openmp) &&
-                        !Args.hasArg(options::OPT_static);
-    addOpenMPRuntime(C, CmdArgs, ToolChain, Args, StaticOpenMP);
+  /// TODO: sanitizers, libm, openmp, -fstack_protector
 
-    if (D.CCCIsCXX()) {
-      if (ToolChain.ShouldLinkCXXStdlib(Args))
-        ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
-      CmdArgs.push_back("-lm");
-    }
-    // Silence warnings when linking C code with a C++ '-stdlib' argument.
-    Args.ClaimAllArgs(options::OPT_stdlib_EQ);
-    // Additional linker set-up and flags for Fortran. This is required in order
-    // to generate executables. As Fortran runtime depends on the C runtime,
-    // these dependencies need to be listed before the C runtime below.
-    if (D.IsFlangMode() &&
-        !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
-      ToolChain.addFortranRuntimeLibraryPath(Args, CmdArgs);
-      ToolChain.addFortranRuntimeLibs(Args, CmdArgs);
-      CmdArgs.push_back("-lm");
-    }
-    if (Args.hasArg(options::OPT_fstack_protector) ||
-        Args.hasArg(options::OPT_fstack_protector_strong) ||
-        Args.hasArg(options::OPT_fstack_protector_all)) {
-      // Explicitly link ssp libraries, not folded into Solaris libc.
-      CmdArgs.push_back("-lssp_nonshared");
-      CmdArgs.push_back("-lssp");
-    }
-    AddRunTimeLibs(ToolChain, D, CmdArgs, Args);
+  AddRunTimeLibs(ToolChain, ToolChain.getDriver(), CmdArgs, Args);
+
+  if (LB.LinkLibc) {
     CmdArgs.push_back("-lc");
 
-    const SanitizerArgs &SA = ToolChain.getSanitizerArgs(Args);
-    if (NeedsSanitizerDeps) {
-      linkSanitizerRuntimeDeps(ToolChain, Args, CmdArgs);
-
-      // Work around Solaris/amd64 ld bug when calling __tls_get_addr directly.
-      // However, ld -z relax=transtls is available since Solaris 11.2, but not
-      // in Illumos.
-      if (Arch == llvm::Triple::x86_64 &&
-          (SA.needsAsanRt() || SA.needsStatsRt() ||
-           (SA.needsUbsanRt() && !SA.requiresMinimalRuntime())) &&
-          !LinkerIsGnuLd) {
-        CmdArgs.push_back("-z");
-        CmdArgs.push_back("relax=transtls");
+    if (LB.LinkStartFiles) {
+      if (LB.shouldGeneratePIE()) {
+        CmdArgs.push_back(
+            Args.MakeArgString(ToolChain.GetFilePath("crtendS.o")));
+      } else {
+        CmdArgs.push_back(
+            Args.MakeArgString(ToolChain.GetFilePath("crtend.o")));
       }
-    }
-    // Avoid AsanInitInternal cycle, Issue #64126.
-    if (SA.needsSharedRt() && SA.needsAsanRt()) {
-      CmdArgs.push_back("-z");
-      CmdArgs.push_back("now");
+
+      CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtn.o")));
     }
   }
-
-  if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nostartfiles,
-                   options::OPT_r)) {
-    const char *crtend = nullptr;
-    if (Args.hasArg(options::OPT_shared) || LB.GeneratePIE)
-      crtend = "crtendS.o";
-    else
-      crtend = "crtend.o";
-    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath(crtend)));
-    CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crtn.o")));
-  }
-
-  ToolChain.addProfileRTLibs(Args, CmdArgs);
 
   const char *Exec = Args.MakeArgString(LB.LinkerPath);
   C.addCommand(std::make_unique<Command>(JA, *this, ResponseFileSupport::None(),
@@ -231,29 +182,53 @@ Illumos::Illumos(const Driver &D, const llvm::Triple &Triple,
     addPathIfExists(D,
                     concat(GCCInstallation.getInstallPath(),
                            GCCInstallation.getMultilib().gccSuffix()),
-                    getLibraryPaths());
+                    getFilePaths());
   }
 
   switch (Triple.getArch()) {
   case llvm::Triple::x86:
     addPathIfExists(D, concat(concat(D.SysRoot, "/usr"), "/lib"),
-                    getLibraryPaths());
+                    getFilePaths());
     break;
   case llvm::Triple::x86_64:
     addPathIfExists(D,
                     concat(concat(concat(D.SysRoot, "/usr"), "/lib"), "/amd64"),
-                    getLibraryPaths());
+                    getFilePaths());
     break;
   default:
     break;
   }
 
-  LinkBlueprints.GeneratePIE =
-      Args.hasFlag(options::OPT_pie, options::OPT_no_pie, false);
+  LinkBlueprints.DemangleSymbols =
+      !Args.hasArg(options::OPT_Z_Xlinker__no_demangle);
+
+  LinkBlueprints.GenerateRelocatableObject = Args.hasArg(options::OPT_r);
+
+  LinkBlueprints.GenerateShared = Args.hasArg(options::OPT_shared);
+
+  LinkBlueprints.PIERequested = Args.hasArg(options::OPT_pie);
+
+  LinkBlueprints.GenerateStatic = Args.hasArg(options::OPT_static);
 
   if (Args.hasArg(options::OPT_rdynamic)) {
     LinkBlueprints.ExportDynamic = true;
     Args.ClaimAllArgs(options::OPT_rdynamic);
+  }
+
+  if (Args.hasArg(options::OPT_nostdlib)) {
+    LinkBlueprints.LinkLibc = false;
+  }
+
+  if (Args.hasArg(options::OPT_nostartfiles)) {
+    LinkBlueprints.LinkStartFiles = false;
+  }
+
+  const Arg *Std = Args.getLastArg(options::OPT_std_EQ, options::OPT_ansi);
+  if (Std) {
+    LinkBlueprints.HaveAnsi = Std->getOption().matches(options::OPT_ansi);
+    if (!LinkBlueprints.HaveAnsi)
+      LinkBlueprints.Std =
+          LangStandard::getLangStandardForName(Std->getValue());
   }
 
   if (const Arg *A = Args.getLastArg(options::OPT_fuse_ld_EQ)) {
