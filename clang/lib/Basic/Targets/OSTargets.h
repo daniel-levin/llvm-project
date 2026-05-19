@@ -704,6 +704,48 @@ public:
   }
 };
 
+template <typename Target>
+class LLVM_LIBRARY_VISIBILITY IllumosTargetInfo : public OSTargetInfo<Target> {
+protected:
+  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
+                    MacroBuilder &Builder) const override {
+    DefineStd(Builder, "sun", Opts);
+    DefineStd(Builder, "__illumos__", Opts);
+    DefineStd(Builder, "unix", Opts);
+    Builder.defineMacro("__svr4__");
+    Builder.defineMacro("__SVR4");
+    if (Opts.CPlusPlus) {
+      Builder.defineMacro("_XOPEN_SOURCE", "600");
+      Builder.defineMacro("_FILE_OFFSET_BITS", "64");
+      Builder.defineMacro("_LARGEFILE_SOURCE");
+      Builder.defineMacro("_LARGEFILE64_SOURCE");
+      Builder.defineMacro("__EXTENSIONS__");
+    }
+    if (Opts.POSIXThreads)
+      Builder.defineMacro("_REENTRANT");
+    if (this->HasFloat128)
+      Builder.defineMacro("__FLOAT128__");
+  }
+
+public:
+  IllumosTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
+      : OSTargetInfo<Target>(Triple, Opts) {
+    if (this->PointerWidth == 64) {
+      this->WCharType = this->WIntType = this->SignedInt;
+    } else {
+      this->WCharType = this->WIntType = this->SignedLong;
+    }
+    switch (Triple.getArch()) {
+    default:
+      break;
+    case llvm::Triple::x86:
+    case llvm::Triple::x86_64:
+      this->HasFloat128 = true;
+      break;
+    }
+  }
+};
+
 // AIX Target
 template <typename Target>
 class AIXTargetInfo : public OSTargetInfo<Target> {

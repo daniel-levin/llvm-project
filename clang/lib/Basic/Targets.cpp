@@ -606,6 +606,9 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
     case llvm::Triple::Solaris:
       return std::make_unique<SolarisTargetInfo<X86_32TargetInfo>>(Triple,
                                                                    Opts);
+    case llvm::Triple::Illumos:
+      return std::make_unique<IllumosTargetInfo<X86_32TargetInfo>>(Triple,
+                                                                   Opts);
     case llvm::Triple::Win32: {
       switch (Triple.getEnvironment()) {
       case llvm::Triple::Cygnus:
@@ -664,6 +667,9 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
                                                                     Opts);
     case llvm::Triple::Solaris:
       return std::make_unique<SolarisTargetInfo<X86_64TargetInfo>>(Triple,
+                                                                   Opts);
+    case llvm::Triple::Illumos:
+      return std::make_unique<IllumosTargetInfo<X86_64TargetInfo>>(Triple,
                                                                    Opts);
     case llvm::Triple::UEFI:
       return std::make_unique<UEFIX86_64TargetInfo>(Triple, Opts);
