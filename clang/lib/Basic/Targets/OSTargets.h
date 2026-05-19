@@ -710,8 +710,8 @@ protected:
   void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
                     MacroBuilder &Builder) const override {
     DefineStd(Builder, "sun", Opts);
-    DefineStd(Builder, "__illumos__", Opts);
     DefineStd(Builder, "unix", Opts);
+    Builder.defineMacro("__illumos__");
     Builder.defineMacro("__svr4__");
     Builder.defineMacro("__SVR4");
     if (Opts.CPlusPlus) {
